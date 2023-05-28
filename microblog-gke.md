@@ -1,13 +1,21 @@
 
 # Playing around in GKE
 
-## Prerequisite
+## Prerequisites
 
-As a start, set the project ID: `export PROJECT_ID=neat-acre-382607`.
+Install gcloud and kubectl for your distro.
+
+```bash
+export PROJECT_ID=
+gcloud auth login
+gcloud config set project $PROJECT_ID
+```
 
 ## Certificate management
 
 ### Integration with Cloud DNS
+
+Create a service account that will be used by cert-manager to solve the DNS challenge.
 
 ```bash
 gcloud iam service-accounts create sa-dns01-solver --display-name "Kubernetes cert-manager DNS resolver"
@@ -16,7 +24,7 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
    --role roles/dns.admin
 ```
 
-Alternatively, create a role with only the following permissions:
+The above command attaches the `dns.admin` role. Alternatively, create a role with only the following permissions:
 
 - dns.resourceRecordSets.*
 - dns.changes.*
@@ -29,7 +37,9 @@ gcloud iam service-accounts keys create key.json \
   --iam-account sa-dns01-solver@$PROJECT_ID.iam.gserviceaccount.com
 ```
 
-### Deploy cert-manager
+### Deployment
+
+Deploy `cert-manager` and verify:
 
 ```bash
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.8.2/cert-manager.yaml
@@ -43,7 +53,7 @@ kubectl -n cert-manager create secret generic \
   clouddns-dns01-solver-svc-acct --from-file=key.json
 ```
 
-Generate the issuer:
+Create 2 cluster issuers, including one for LE's staging for testing purposes:
 
 ```bash
 MY_EMAIL=<email>
@@ -87,9 +97,9 @@ spec:
 EOF
 ```
 
-## Cluster
+## GKE cluster
 
-Create a small 2-node cluster in an manual-mode VPC. Enable [Dataplane v2](https://cloud.google.com/kubernetes-engine/docs/concepts/dataplane-v2), because eBPF FTW.
+Create a small 2-node cluster in a manual-mode VPC. Enable [Dataplane v2](https://cloud.google.com/kubernetes-engine/docs/concepts/dataplane-v2), because eBPF FTW.
 
 ```bash
 gcloud beta container clusters create demolopolis \
@@ -101,12 +111,18 @@ gcloud beta container clusters create demolopolis \
   --no-enable-intra-node-visibility \
   --enable-dataplane-v2 \
   --addons HorizontalPodAutoscaling,GcePersistentDiskCsiDriver \
-  --workload-pool "neat-acre-382607.svc.id.goog"
+  --workload-pool "<PROJECT_ID>.svc.id.goog"
+```
 
+Configure `kubectl`:
+
+```bash
 gcloud container clusters get-credentials demolopolis --region europe-west3-a
 ```
 
-Ingress controller:
+### Ingress controller
+
+In the above section for creating the GKE cluster, we did not deploy the default ingress controller. Here, we deploy ingress-nginx instead:
 
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.7.1/deploy/static/provider/cloud/deploy.yaml
@@ -114,6 +130,8 @@ kubectl -n ingress-nginx get po
 ```
 
 ### Tools
+
+Deploy `netshoot`, a very handy tool for troubleshooting and verifying connectivity:
 
 ```bash
 cat <<EOF | kubectl apply -f -
@@ -135,7 +153,7 @@ EOF
 
 ### Prometheus and Grafana
 
-Doc: <https://github.com/prometheus-operator/kube-prometheus>
+Grab the manifests from the GitHub repo. Here is a cute trick to not clutter your local machine:
 
 ```bash
 mkdir ./work
@@ -147,24 +165,10 @@ cp -Rp /tmp/manifests .
 exit
 ```
 
-Create the namespace and CRDs. Note that due to some CRD size we are using kubectl server-side apply feature:
+Create the namespace and CRDs. Here we are doing a server-side apply because of some CRD sizes.
 
 ```bash
 kubectl apply --server-side -f ./work/manifests/setup
-```
-
-These are the things deployed by the setup manifests:
-
-```log
-customresourcedefinition.apiextensions.k8s.io/alertmanagerconfigs.monitoring.coreos.com serverside-applied
-customresourcedefinition.apiextensions.k8s.io/alertmanagers.monitoring.coreos.com serverside-applied
-customresourcedefinition.apiextensions.k8s.io/podmonitors.monitoring.coreos.com serverside-applied
-customresourcedefinition.apiextensions.k8s.io/probes.monitoring.coreos.com serverside-applied
-customresourcedefinition.apiextensions.k8s.io/prometheuses.monitoring.coreos.com serverside-applied
-customresourcedefinition.apiextensions.k8s.io/prometheusrules.monitoring.coreos.com serverside-applied
-customresourcedefinition.apiextensions.k8s.io/servicemonitors.monitoring.coreos.com serverside-applied
-customresourcedefinition.apiextensions.k8s.io/thanosrulers.monitoring.coreos.com serverside-applied
-namespace/monitoring serverside-applied
 ```
 
 Deploy the stack:
@@ -181,30 +185,15 @@ kubectl apply -f ./work/manifests/
 kubectl -n monitoring get pods
 ```
 
-node-exporter pods not being created:
-
-```bash
-┌─[lester@parrot]─[~/GitHub/microblog]
-└──╼ $ kubectl -n monitoring get ds node-exporter
-NAME            DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR            AGE
-node-exporter   1         0         0       0            0           kubernetes.io/os=linux   23m
-┌─[lester@parrot]─[~/GitHub/microblog]
-└──╼ $ kubectl -n monitoring describe ds node-exporter | tail -4
-  Type     Reason        Age                  From                  Message
-  ----     ------        ----                 ----                  -------
-  Warning  FailedCreate  23m (x9 over 23m)    daemonset-controller  Error creating: pods "node-exporter-" is forbidden: error looking up service account monitoring/node-exporter: serviceaccount "node-exporter" not found
-  Warning  FailedCreate  114s (x10 over 23m)  daemonset-controller  Error creating: insufficient quota to match these scopes: [{PriorityClass In [system-node-critical system-cluster-critical]}]
-┌─[lester@parrot]─[~/GitHub/microblog]
-└──╼ $ 
-```
-
 Temporarily port-forward to test:
 
 ```bash
 kubectl -n monitoring port-forward --address 0.0.0.0 svc/grafana 3000:3000
 ```
 
-Define a network policy to allow Ingress and tools to reach the Prometheus and Grafana pods:
+Grafana should be available at <http://127.0.0.1:3000>.
+
+The `kube-prometheus` manifests include network policies which will restrict ingress access to pods, so we need to define network policies to allow our ingress (and tools) to reach the Prometheus and Grafana pods:
 
 ```bash
 ## Grafana
@@ -272,39 +261,70 @@ spec:
   policyTypes:
   - Ingress
 EOF
+```
 
+Quick check to make sure the we properly formatted our ingress rules:
+
+```bash
 ## verify that the rules have been created properly:
 kubectl -n monitoring get networkpolicy allow-ingress-to-grafana -o jsonpath='{.spec.ingress[0].from[0]}' | jq ## first source
 kubectl -n monitoring get networkpolicy allow-ingress-to-grafana -o jsonpath='{.spec.ingress[0].from[1]}' | jq ## second source
 kubectl -n monitoring get networkpolicy allow-ingress-to-prometheus -o jsonpath='{.spec.ingress[0].from[0]}' | jq ## first source
 kubectl -n monitoring get networkpolicy allow-ingress-to-prometheus -o jsonpath='{.spec.ingress[0].from[1]}' | jq ## second source
+````
 
-# test with netshoot
+Test with netshoot:
+
+```bash
 kubectl exec -it netshoot -- bash -c 'curl http://grafana.monitoring.svc.cluster.local:3000'
 kubectl exec -it netshoot -- bash -c 'curl http://prometheus-k8s.monitoring.svc.cluster.local:9090'
 ```
 
-Create the Ingress resource:
+Create a certificate:
+
+```bash
+cat <<EOF | kubectl apply -f -
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: monitoring-cloud-sreafterhours-com
+  namespace: monitoring
+spec:
+  secretName: monitoring-tls
+  issuerRef:
+    name: letsencrypt-production
+    kind: ClusterIssuer
+  dnsNames:
+  - grafana.cloud.sreafterhours.com
+  - prometheus.cloud.sreafterhours.com
+EOF
+```
+
+Create a single ingress resource for Grafana and Prometheus, and route to corresponding backend using the CNI in the request:
 
 ```bash
 # get the port names
 kubectl -n monitoring get svc grafana -o yaml
 kubectl -n monitoring get svc prometheus-k8s -o yaml
 
-IP=$(curl -s ipconfig.io)
+MY_IP=$(curl -s ipconfig.io)
 
-# single resource, route to backend using the CNI in the request
-# scenario: saving IP addresses
 cat <<EOF | kubectl apply -f -
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   annotations:
-    nginx.ingress.kubernetes.io/whitelist-source-range: ${IP}
+    nginx.ingress.kubernetes.io/whitelist-source-range: ${MY_IP}
   name: monitoring
   namespace: monitoring
 spec:
   ingressClassName: nginx
+  tls:
+    - hosts:
+      - grafana.cloud.sreafterhours.com
+      - prometheus.cloud.sreafterhours.com
+      secretName: monitoring-tls
   rules:
   - host: grafana.cloud.sreafterhours.com
     http:
@@ -344,8 +364,8 @@ gcloud dns record-sets create prometheus.cloud.sreafterhours.com. \
 Test:
 
 ```bash
-curl -k https://grafana.cloud.sreafterhours.com/ -I
-curl -k https://prometheus.cloud.sreafterhours.com/ -I
+curl https://grafana.cloud.sreafterhours.com/ -I
+curl https://prometheus.cloud.sreafterhours.com/ -I
 ```
 
 ## Application
@@ -356,9 +376,11 @@ The application is called "microblog" and was used by [Miguel Griberg](https://g
 
 ### Dockerize the application
 
-Create the Docker Artifact Registry: <europe-west3-docker.pkg.dev/neat-acre-382607/demolopolis>
+Create the Docker Artifact Registry. For this demo, I created:
 
-The application already had a `Dockerfile`, but there is 1 issue with the dependencies and I had some thoughts about a few things, so I recreated it as follows:
+```europe-west3-docker.pkg.dev/<PROJECT_ID>/demolopolis```
+
+The application already had a `Dockerfile`, but there was an issue with the dependencies and I had opinions on a few things, so I recreated it as follows:
 
 ```Dockerfile
 FROM python:3.11-slim
@@ -425,19 +447,113 @@ jobs:
         with:
           push: true
           tags: |
-            europe-west3-docker.pkg.dev/neat-acre-382607/demolopolis/microblog:${{ steps.get-image-tag.outputs.short_ref }}
-            europe-west3-docker.pkg.dev/neat-acre-382607/demolopolis/microblog:latest
+            europe-west3-docker.pkg.dev/<PROJECT_ID>/demolopolis/microblog:${{ steps.get-image-tag.outputs.short_ref }}
+            europe-west3-docker.pkg.dev/<PROJECT_ID>/demolopolis/microblog:latest
 ```
 
 ### Deployment
 
-The following command creates a namespace for the application, the deployment with 1 replica, and an nginx ingress resource.
-
-The nginx resource is annotated to allow only my public IP address. This allows me to easily add some layer of security to my deployment while testing.
+The following command creates a namespace, a certificate, a deployment with 1 replica, a service, and an nginx ingress resource.
 
 ```bash
-kubectl apply -f manifests/
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  labels:
+    app.kubernetes.io/instance: microblog
+    app.kubernetes.io/name: microblog
+    kubernetes.io/metadata.name: microblog
+  name: microblog
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: microblog-cloud-sreafterhours-com
+  namespace: microblog
+spec:
+  secretName: microblog-tls
+  issuerRef:
+    name: letsencrypt-production
+    kind: ClusterIssuer
+  dnsNames:
+  - microblog.cloud.sreafterhours.com
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: microblog
+  name: microblog
+  namespace: microblog
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: microblog
+  template:
+    metadata:
+      labels:
+        app: microblog
+    spec:
+      containers:
+      - image: europe-west3-docker.pkg.dev/<PROJECT_ID>/demolopolis/microblog:1.0
+        name: microblog
+        ports:
+        - containerPort: 5000
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "100Mi"
+          limits:
+            cpu: "500m"
+            memory: "500Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: microblog
+  name: microblog
+  namespace: microblog
+spec:
+  ports:
+  - name: microblogport
+    port: 80
+    protocol: TCP
+    targetPort: 5000
+  selector:
+    app: microblog
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/whitelist-source-range: ${MY_IP}
+  name: microblog
+  namespace: microblog
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+      - microblog.cloud.sreafterhours.com
+      secretName: microblog-tls
+  rules:
+  - host: microblog.cloud.sreafterhours.com
+    http:
+      paths:
+      - backend:
+          service:
+            name: microblog
+            port:
+              name: microblogport
+        path: /
+        pathType: Prefix
+EOF
 ```
+
+The ingress resource is annotated to allow only our public IP address. This is a quick and easy-to-add layer of security to our application while testing.
 
 Wait for the certificate to be signed and the Load-Balancer to allocate a public IP address:
 
@@ -449,6 +565,7 @@ Create the A record in Cloud DNS:
 
 ```bash
 EXT_IP=$(kubectl -n microblog get ing microblog -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
 gcloud dns record-sets create microblog.cloud.sreafterhours.com. \
   --zone="cloud-sreafterhours-com" --type="A" --ttl="300" \
   --rrdatas="${EXT_IP}"
