@@ -1,9 +1,9 @@
 
-# Playing around in GKE
+I have been playing around with Kubernetes and Google Kubernetes Engine lately, and I figured why not share some of my notes on my blog. With that, in this post, I documented how I set up a [GKE](https://cloud.google.com/kubernetes-engine) cluster, installed some useful tools and automations, and then deployed a demo application called "microblog".
 
 ## Prerequisites
 
-Install gcloud and kubectl for your distro.
+Install gcloud and kubectl for your distro, then configure gcloud:
 
 ```bash
 export PROJECT_ID=
@@ -11,20 +11,31 @@ gcloud auth login
 gcloud config set project $PROJECT_ID
 ```
 
+I am using my subdomain `cloud.sreafterhours.com` in this documentation, which is delegated to [Cloud DNS](https://cloud.google.com/dns):
+
+![](./assets/images/2023-05-28/1.png)
+
 ## Certificate management
 
-### Integration with Cloud DNS
+I prefer automating certificate management for relatively-small projects. This saves a lot of management overhead, and allows users (i.e. developers) to freely use certificates on the ingresses they deploy.
 
-Create a service account that will be used by cert-manager to solve the DNS challenge.
+In this exercise, I am using [cert-manager](https://cert-manager.io/docs/) and [Let's Encrypt](https://letsencrypt.org/) ACME issuer.
+
+### DNS challenge
+
+When creating a certificate signing request, you typically have to prove ownership to the domain(s) you are creating a certificate for. There are a few ways to resolve the challenge for verifying domain ownership, but considering that I use Cloud DNS for the domains anyway, I would just use [Cloud DNS challenge](https://cert-manager.io/docs/configuration/acme/dns01/google/).
+
+Create a service account that will be used by cert-manager to solve the DNS challenge:
 
 ```bash
 gcloud iam service-accounts create sa-dns01-solver --display-name "Kubernetes cert-manager DNS resolver"
+
 gcloud projects add-iam-policy-binding $PROJECT_ID \
    --member serviceAccount:sa-dns01-solver@$PROJECT_ID.iam.gserviceaccount.com \
    --role roles/dns.admin
 ```
 
-The above command attaches the `dns.admin` role. Alternatively, create a role with only the following permissions:
+The above command attaches the `dns.admin` role. Alternatively, you could also create a role with only the following permissions:
 
 - dns.resourceRecordSets.*
 - dns.changes.*
@@ -37,46 +48,32 @@ gcloud iam service-accounts keys create key.json \
   --iam-account sa-dns01-solver@$PROJECT_ID.iam.gserviceaccount.com
 ```
 
-### Deployment
+### cert-manager
 
 Deploy `cert-manager` and verify:
 
 ```bash
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.8.2/cert-manager.yaml
+
 kubectl -n cert-manager get all
 ```
 
-Create a Kubernetes secret out of the key:
+Create a Kubernetes secret out of the key. Create it in the `cert-manager` namespace since we are creating a cluster issuer in the next steps:
 
 ```bash
 kubectl -n cert-manager create secret generic \
   clouddns-dns01-solver-svc-acct --from-file=key.json
+
+# clean up
+rm -f ./key.json
 ```
 
-Create 2 cluster issuers, including one for LE's staging for testing purposes:
+Create the `ClusterIssuer`, passing information such as administrator's email address, project ID, and the name of the secret containing the service account credentials:
 
 ```bash
 MY_EMAIL=<email>
 
 cat <<EOF | kubectl apply -f -
-apiVersion: cert-manager.io/v1
-kind: ClusterIssuer
-metadata:
-  name: letsencrypt-staging
-spec:
-  acme:
-    server: https://acme-staging-v02.api.letsencrypt.org/directory
-    email: ${MY_EMAIL}
-    privateKeySecretRef:
-      name: letsencrypt-staging
-    solvers:
-    - dns01:
-        cloudDNS:
-          project: ${PROJECT_ID}
-          serviceAccountSecretRef:
-            name: clouddns-dns01-solver-svc-acct
-            key: key.json
----
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:
@@ -97,9 +94,32 @@ spec:
 EOF
 ```
 
-## GKE cluster
+Alternatively, you could also use LE's staging server for testing purposes:
 
-Create a small 2-node cluster in a manual-mode VPC. Enable [Dataplane v2](https://cloud.google.com/kubernetes-engine/docs/concepts/dataplane-v2), because eBPF FTW.
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: ${MY_EMAIL}
+    privateKeySecretRef:
+      name: letsencrypt-staging
+    solvers:
+    - dns01:
+        cloudDNS:
+          project: ${PROJECT_ID}
+          serviceAccountSecretRef:
+            name: clouddns-dns01-solver-svc-acct
+            key: key.json
+```
+
+## Google Kubernetes Engine
+
+Create a small 1-node cluster with machine type `e2-standard-4` (4 vCPUs, 8 GB memory). I am creating it in an existing manual-mode VPC. Also enable [Dataplane v2](https://cloud.google.com/kubernetes-engine/docs/concepts/dataplane-v2), because [eBPF]](https://ebpf.io/what-is-ebpf/) FTW!
 
 ```bash
 gcloud beta container clusters create demolopolis \
@@ -111,18 +131,27 @@ gcloud beta container clusters create demolopolis \
   --no-enable-intra-node-visibility \
   --enable-dataplane-v2 \
   --addons HorizontalPodAutoscaling,GcePersistentDiskCsiDriver \
-  --workload-pool "<PROJECT_ID>.svc.id.goog"
+  --workload-pool "${PROJECT_ID}.svc.id.goog"
 ```
+
+Notice that the `HttpLoadBalancing` addon was not included, because in the next section we will configure [ingress-nginx](https://github.com/kubernetes/ingress-nginx) instead.
+
+Result:
+
+![](./assets/images/2023-05-28/2.png)
 
 Configure `kubectl`:
 
 ```bash
 gcloud container clusters get-credentials demolopolis --region europe-west3-a
+
+# verify:
+kubectl cluster-info
 ```
 
 ### Ingress controller
 
-In the above section for creating the GKE cluster, we did not deploy the default ingress controller. Here, we deploy ingress-nginx instead:
+Deploy ingress-nginx:
 
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.7.1/deploy/static/provider/cloud/deploy.yaml
@@ -153,7 +182,7 @@ EOF
 
 ### Prometheus and Grafana
 
-Grab the manifests from the GitHub repo. Here is a cute trick to not clutter your local machine:
+Prometheus management can get complicated sometimes. I would simplify this by using the Prometheus Operator instead. Here is a cute trick for grabbing the manifests from the GitHub repo while trying not to clutter your local machine:
 
 ```bash
 mkdir ./work
@@ -182,6 +211,7 @@ kubectl wait \
 
 kubectl apply -f ./work/manifests/
 
+# verify:
 kubectl -n monitoring get pods
 ```
 
@@ -193,10 +223,9 @@ kubectl -n monitoring port-forward --address 0.0.0.0 svc/grafana 3000:3000
 
 Grafana should be available at <http://127.0.0.1:3000>.
 
-The `kube-prometheus` manifests include network policies which will restrict ingress access to pods, so we need to define network policies to allow our ingress (and tools) to reach the Prometheus and Grafana pods:
+The `kube-prometheus` manifests include network policies which will restrict ingress access to pods, so we need to define network policies to allow our ingress controller (and tools) to reach the Prometheus and Grafana pods:
 
 ```bash
-## Grafana
 cat <<EOF | kubectl apply -f -
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -263,14 +292,12 @@ spec:
 EOF
 ```
 
-Quick check to make sure the we properly formatted our ingress rules:
+Example commands to verify that we properly formatted our ingress rules:
 
 ```bash
 ## verify that the rules have been created properly:
-kubectl -n monitoring get networkpolicy allow-ingress-to-grafana -o jsonpath='{.spec.ingress[0].from[0]}' | jq ## first source
-kubectl -n monitoring get networkpolicy allow-ingress-to-grafana -o jsonpath='{.spec.ingress[0].from[1]}' | jq ## second source
-kubectl -n monitoring get networkpolicy allow-ingress-to-prometheus -o jsonpath='{.spec.ingress[0].from[0]}' | jq ## first source
-kubectl -n monitoring get networkpolicy allow-ingress-to-prometheus -o jsonpath='{.spec.ingress[0].from[1]}' | jq ## second source
+kubectl -n monitoring get networkpolicy allow-ingress-to-grafana -o jsonpath='{.spec.ingress[0].from[0]}' | jq
+kubectl -n monitoring get networkpolicy allow-ingress-to-grafana -o jsonpath='{.spec.ingress[0].from[1]}' | jq
 ````
 
 Test with netshoot:
@@ -280,7 +307,7 @@ kubectl exec -it netshoot -- bash -c 'curl http://grafana.monitoring.svc.cluster
 kubectl exec -it netshoot -- bash -c 'curl http://prometheus-k8s.monitoring.svc.cluster.local:9090'
 ```
 
-Create a certificate:
+Create a single certificate for both Prometheus and Grafana:
 
 ```bash
 cat <<EOF | kubectl apply -f -
@@ -300,6 +327,8 @@ spec:
   - prometheus.cloud.sreafterhours.com
 EOF
 ```
+
+This would use the first entry as the canonical name, and of course the entries under `dnsNames` would be added as the [cert SAN](https://knowledge.digicert.com/solution/SO9440.html).
 
 Create a single ingress resource for Grafana and Prometheus, and route to corresponding backend using the CNI in the request:
 
@@ -352,7 +381,9 @@ EOF
 Create the A records in Cloud DNS:
 
 ```bash
+# grab the external IP address associated with the LB resource:
 EXT_IP=$(kubectl -n monitoring get ing monitoring -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
 gcloud dns record-sets create grafana.cloud.sreafterhours.com. \
   --zone="cloud-sreafterhours-com" --type="A" --ttl="300" \
   --rrdatas="${EXT_IP}"
@@ -368,6 +399,14 @@ curl https://grafana.cloud.sreafterhours.com/ -I
 curl https://prometheus.cloud.sreafterhours.com/ -I
 ```
 
+Grafana:
+
+![](./assets/images/2023-05-28/3.png)
+
+Prometheus:
+
+![](./assets/images/2023-05-28/4.png)
+
 ## Application
 
 ### Background
@@ -378,7 +417,7 @@ The application is called "microblog" and was used by [Miguel Griberg](https://g
 
 Create the Docker Artifact Registry. For this demo, I created:
 
-```europe-west3-docker.pkg.dev/<PROJECT_ID>/demolopolis```
+`europe-west3-docker.pkg.dev/<PROJECT_ID>/demolopolis`
 
 The application already had a `Dockerfile`, but there was an issue with the dependencies and I had opinions on a few things, so I recreated it as follows:
 
@@ -404,43 +443,36 @@ ENTRYPOINT ["./boot.sh"]
 
 ### GitHub Actions
 
-The following action builds the image and pushes it to Artifact Registry. One thing to note is the usage of git tag as the corresponding image tag:
+The following [action](https://github.com/guerzon/microblog/blob/main/.github/workflows/build_push.yaml) builds the image and pushes it to Artifact Registry:
 
 ```yaml
 name: Release
 on: 
   push:
-
 jobs:
   docker-image-release:
     name: Build & push to Google Artifact Registry
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags')
-
     steps:
-
       - name: Checkout
         id: checkout
         uses: actions/checkout@v3
-
       - name: Authenticate to Google Cloud
         id: auth
         uses: google-github-actions/auth@v0
         with:
           token_format: access_token
           credentials_json: '${{ secrets.B64_GCLOUD_SERVICE_ACCOUNT_JSON }}'
-
       - name: Login to the registry
         uses: docker/login-action@v1
         with:
           registry: europe-west3-docker.pkg.dev
           username: oauth2accesstoken
           password: '${{ steps.auth.outputs.access_token }}'
-
       - name: Get image tag
         id: get-image-tag
         run: echo ::set-output name=short_ref::${GITHUB_REF#refs/*/}
-
       - name: Build and push the image
         id: build-tag-push
         uses: docker/build-push-action@v2
@@ -450,6 +482,8 @@ jobs:
             europe-west3-docker.pkg.dev/<PROJECT_ID>/demolopolis/microblog:${{ steps.get-image-tag.outputs.short_ref }}
             europe-west3-docker.pkg.dev/<PROJECT_ID>/demolopolis/microblog:latest
 ```
+
+The flow is very simple - build using tags, authenticate to Google Cloud, login to the registry, extract the git tag, then build and push the image with the corresponding tag and additionally the `latest` tag.
 
 ### Deployment
 
@@ -553,7 +587,7 @@ spec:
 EOF
 ```
 
-The ingress resource is annotated to allow only our public IP address. This is a quick and easy-to-add layer of security to our application while testing.
+You might have noticed that the ingress resources were annotated to allow only our public IP address. This is a quick and easy-to-add layer of security to our application while testing. A user coming from another source IP address would get a `403 Forbidden` error:
 
 Wait for the certificate to be signed and the Load-Balancer to allocate a public IP address:
 
@@ -564,6 +598,7 @@ kubectl -n microblog get cert,ing
 Create the A record in Cloud DNS:
 
 ```bash
+# grab the external IP address associated with the LB resource:
 EXT_IP=$(kubectl -n microblog get ing microblog -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 
 gcloud dns record-sets create microblog.cloud.sreafterhours.com. \
@@ -573,12 +608,21 @@ gcloud dns record-sets create microblog.cloud.sreafterhours.com. \
 
 Application is now available at <https://microblog.cloud.sreafterhours.com>.
 
+![](./assets/images/2023-05-28/5.png)
+
 ## Cleanup
 
 ```bash
-rm -rf ./work key.json
 gcloud dns record-sets delete grafana.cloud.sreafterhours.com. --zone="cloud-sreafterhours-com" --type="A"
 gcloud dns record-sets delete prometheus.cloud.sreafterhours.com. --zone="cloud-sreafterhours-com" --type="A"
 gcloud dns record-sets delete microblog.cloud.sreafterhours.com. --zone="cloud-sreafterhours-com" --type="A"
 gcloud container clusters delete demolopolis --region europe-west3-a
 ```
+
+## Next steps:
+
+1. I want to get rid of the YAMLs for deploying the application and use ArgoCD instead.
+2. Running multiple replicas. Firstly, I need to figure out how the application would support this properly.
+3. Automate Cloud DNS provisioning.
+
+Thanks for reading!
