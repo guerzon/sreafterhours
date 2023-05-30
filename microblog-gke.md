@@ -617,6 +617,10 @@ gcloud dns record-sets delete grafana.cloud.sreafterhours.com. --zone="cloud-sre
 gcloud dns record-sets delete prometheus.cloud.sreafterhours.com. --zone="cloud-sreafterhours-com" --type="A"
 gcloud dns record-sets delete microblog.cloud.sreafterhours.com. --zone="cloud-sreafterhours-com" --type="A"
 gcloud container clusters delete demolopolis --region europe-west3-a
+gcloud projects remove-iam-policy-binding $PROJECT_ID \
+   --member serviceAccount:sa-dns01-solver@$PROJECT_ID.iam.gserviceaccount.com \
+   --role roles/dns.admin
+gcloud iam service-accounts delete sa-dns01-solver@$PROJECT_ID.iam.gserviceaccount.com
 ```
 
 ## Next steps:
@@ -624,5 +628,6 @@ gcloud container clusters delete demolopolis --region europe-west3-a
 1. I want to get rid of the YAMLs for deploying the application and use ArgoCD instead.
 2. Running multiple replicas. Firstly, I need to figure out how the application would support this properly.
 3. Automate Cloud DNS provisioning.
+4. Use [GKE Ingress][https://cloud.google.com/kubernetes-engine/docs/concepts/ingress) for external LB and compare it with third-party ingress controllers such as ingress-nginx.
 
 Thanks for reading!
