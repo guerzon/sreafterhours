@@ -13,7 +13,7 @@ gcloud config set project $PROJECT_ID
 
 I am using my subdomain `cloud.sreafterhours.com` in this documentation, which is delegated to [Cloud DNS](https://cloud.google.com/dns):
 
-![](./assets/images/2023-05-28/1.png)
+![](../assets-shared/images/cloud-dns-record.png)
 
 ## Certificate management
 
