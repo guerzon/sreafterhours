@@ -628,6 +628,6 @@ gcloud iam service-accounts delete sa-dns01-solver@$PROJECT_ID.iam.gserviceaccou
 1. I want to get rid of the YAMLs for deploying the application and use ArgoCD instead.
 2. Running multiple replicas. Firstly, I need to figure out how the application would support this properly.
 3. Automate Cloud DNS provisioning.
-4. Use [GKE Ingress][https://cloud.google.com/kubernetes-engine/docs/concepts/ingress) for external LB and compare it with third-party ingress controllers such as ingress-nginx.
+4. Use [GKE Ingress](https://cloud.google.com/kubernetes-engine/docs/concepts/ingress) for external LB and compare it with third-party ingress controllers such as ingress-nginx.
 
 Thanks for reading!
