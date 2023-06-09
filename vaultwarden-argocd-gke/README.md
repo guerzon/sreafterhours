@@ -15,8 +15,7 @@ In this post, I will share how I do the following:
 3. Automate certificate mangement using External DNS.
 4. Build a privately-accessible Cloud SQL PostgreSQL instance using Terraform.
 5. Deploy nginx ingress controller.
-6. Deploy [Vaultwarden](https://github.com/guerzon/vaultwarden) using Helm and [GKE Ingress](https://cloud.google.com/kubernetes-engine/docs/concepts/ingress).
-7. Manage continuous deployment using [ArgoCD](https://argo-cd.readthedocs.io/en/stable/understand_the_basics/).
+6. Deploy [Vaultwarden](https://github.com/guerzon/vaultwarden) using Helm
 
 ### 1.2 About the app
 
@@ -39,7 +38,6 @@ Create the Terraform files based on the provider documentation: <https://registr
 4. Enable [VPC-native networking](https://cloud.google.com/kubernetes-engine/docs/concepts/alias-ips). This would create network endpoint groups (NEG's), the benefits of which were well-explained by [this](https://medium.com/google-cloud/nuts-and-bolts-of-negs-network-endpoint-groups-in-gcp-35b0d06f4691) post.
 5. Create a new node pool with 2 `e2-medium` nodes.
 
-
 `provider.tf`:
 
 ```tf
@@ -52,7 +50,7 @@ Create the Terraform files based on the provider documentation: <https://registr
 
 The single-use module is simplified for this task.
 
-Run terraform init, fmt, validate.
+Run terraform `init`, `fmt`, `validate`.
 
 ```bash
 # specify the project ID
@@ -257,7 +255,6 @@ spec:
     image: nicolaka/netshoot
     command: ['sh', '-c', 'while true; do sleep 5; done']
 EOF
-pod/netshoot created
 
 # exec to the pod:
 kubectl exec -it netshoot -- bash
