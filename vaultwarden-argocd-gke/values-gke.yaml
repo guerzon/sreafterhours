@@ -1,0 +1,35 @@
+
+domain: "https://vault.cloud.sreafterhours.com"
+image:
+  tag: "1.28.1"
+
+adminToken:
+  value: "khit9gYQV6ax9LKTTm+s6QbZi5oiuR+3s1PEn9q3IRmCl9IQn7LmBpmFCOYTb7Mr"
+
+signupDomains: "cloud.sreafterhours.com"
+
+smtp:
+  existingSecret: "smtpcreds"
+  host: smtp.gmail.com
+  from: postmaster@vault.cloud.pidnull.io
+  username:
+    existingSecretKey: "MAIL_USER"
+  password:
+    existingSecretKey: "MAIL_PASS"
+
+storage:
+  enabled: true
+  size: "20Gi"
+  class: "standard-rwo"
+
+database:
+  type: "postgres"
+  existingSecret: "prod-db-creds"
+  existingSecretKey: "secret-uri"
+
+ingress:
+  enabled: true
+  class: "nginx"
+  hostname: "vault.cloud.sreafterhours.com"
+  tls: true
+  tlsSecret: "vaultwarden-tls"
